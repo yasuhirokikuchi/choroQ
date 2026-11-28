@@ -1,6 +1,8 @@
 ﻿#include "pch.h"
 #include "Game.h"
 #include "SceneMgr.h"
+#include <stdio.h>
+#include <string.h>
 
 #define HAIKEI_SIZE_W 640          // 背景の幅
 
@@ -103,6 +105,10 @@ static int vibration_Haikei;
 // ゲージ
 static double Gage;
 
+// 画面上の文字（結果・数値・操作説明）
+static int FontHud = -1;
+static int FontResult = -1;
+
 
 // 真偽のやつ
 static bool Car_Select;
@@ -179,6 +185,92 @@ static void UpdateBombPosition() {
     Bomb_x2 = Bomb_x + BOMB_X_DIFFERENCE;
 }
 
+// 結果と数値用のフォントを用意する（Rキーのやり直しでは作り直さない）
+static void EnsureGameFonts() {
+    if (FontHud == -1) {
+        FontHud = CreateFontToHandle("ＭＳ ゴシック", 20, 5, DX_FONTTYPE_NORMAL);
+    }
+    if (FontResult == -1) {
+        FontResult = CreateFontToHandle("ＭＳ ゴシック", 34, 6, DX_FONTTYPE_NORMAL);
+    }
+}
+
+static int TextWidth(const char* text, int font) {
+    return GetDrawStringWidthToHandle(text, (int)strlen(text), font);
+}
+
+// 文字の後ろに板を敷き、壁の色に埋まらないようにする
+static void DrawPlateText(int x, int y, const char* text, int font, unsigned int color) {
+    if (font == -1) {
+        DrawFormatString(x, y, color, "%s", text);
+        return;
+    }
+
+    int textW = TextWidth(text, font);
+    int textH = GetFontSizeToHandle(font);
+    const int padX = 10;
+    const int padY = 6;
+    int x2 = x + textW + padX * 2;
+    int y2 = y + textH + padY * 2;
+
+    DrawBox(x + 3, y + 3, x2 + 3, y2 + 3, GetColor(168, 136, 96), TRUE);
+    DrawBox(x, y, x2, y2, GetColor(255, 250, 236), TRUE);
+    DrawBox(x, y, x2, y2, GetColor(72, 48, 24), FALSE);
+    DrawStringToHandle(x + padX, y + padY, text, color, font);
+}
+
+static void DrawCenteredPlateText(int y, const char* text, int font, unsigned int color) {
+    int textW = (font == -1) ? 0 : TextWidth(text, font);
+    int x = (640 - (textW + 20)) / 2;
+    if (x < 8) {
+        x = 8;
+    }
+    DrawPlateText(x, y, text, font, color);
+}
+
+// 結果を、見出し・内容・操作に分けて中央に出す
+static void DrawResultBoard(const char* title, unsigned int titleColor, const char* detail) {
+    const char* hint = "Rキーでリスタート    Escでメニュー";
+    if (FontResult == -1 || FontHud == -1) {
+        DrawFormatString(160, 40, titleColor, "%s", title);
+        DrawFormatString(160, 64, GetColor(0, 0, 0), "%s", detail);
+        DrawFormatString(160, 88, GetColor(0, 0, 0), "%s", hint);
+        return;
+    }
+
+    int titleW = TextWidth(title, FontResult);
+    int detailW = TextWidth(detail, FontHud);
+    int hintW = TextWidth(hint, FontHud);
+    int contentW = titleW;
+    if (detailW > contentW) {
+        contentW = detailW;
+    }
+    if (hintW > contentW) {
+        contentW = hintW;
+    }
+
+    int titleH = GetFontSizeToHandle(FontResult);
+    int bodyH = GetFontSizeToHandle(FontHud);
+    const int padX = 24;
+    const int padY = 14;
+    const int lineGap = 8;
+    int w = contentW + padX * 2;
+    int h = padY + titleH + lineGap + bodyH + lineGap + bodyH + padY;
+    int x = (640 - w) / 2;
+    int y = 14;
+
+    DrawBox(x + 4, y + 4, x + w + 4, y + h + 4, GetColor(168, 136, 96), TRUE);
+    DrawBox(x, y, x + w, y + h, GetColor(255, 250, 236), TRUE);
+    DrawBox(x, y, x + w, y + h, GetColor(72, 48, 24), FALSE);
+    DrawBox(x + 4, y + 4, x + w - 4, y + h - 4, GetColor(214, 176, 116), FALSE);
+
+    DrawStringToHandle(x + (w - titleW) / 2, y + padY, title, titleColor, FontResult);
+    int lineY = y + padY + titleH + lineGap;
+    DrawStringToHandle(x + (w - detailW) / 2, lineY, detail, GetColor(48, 34, 20), FontHud);
+    lineY += bodyH + lineGap;
+    DrawStringToHandle(x + (w - hintW) / 2, lineY, hint, GetColor(96, 68, 36), FontHud);
+}
+
 // 初期化
 void Game_Initialize() {
 
@@ -191,6 +283,7 @@ void Game_Initialize() {
     Over = 0;
 
     KeyState_Game[KEY_INPUT_SPACE] = 0;
+    EnsureGameFonts();
 
     Car_Select = TRUE;
     Push = TRUE;
@@ -260,7 +353,7 @@ void Game_Initialize() {
 
     // どっかーんの文字の座標
     Dokkan_x = 120;
-    Dokkan_y = 80;
+    Dokkan_y = 150;
     Dokkan_x2 = Dokkan_x + DOKKAN_W;
     Dokkan_y2 = Dokkan_y + DOKKAN_H;
 
@@ -302,6 +395,15 @@ void Game_Finalize() {
     DeleteGraph(GuguguHandle);
     DeleteGraph(PaHandle);
     DeleteGraph(DokkanHandle);
+
+    if (FontHud != -1) {
+        DeleteFontToHandle(FontHud);
+        FontHud = -1;
+    }
+    if (FontResult != -1) {
+        DeleteFontToHandle(FontResult);
+        FontResult = -1;
+    }
 }
 
 // 更新
@@ -633,32 +735,34 @@ void Game_Draw() {
             else if (Car == 2) {
                 DrawExtendGraph((int)Car_x, Car_y, (int)Car_x2, Car_y2, CarHandle_3, TRUE);
             }
-            // 爆弾までの距離によって結果表示
-            if (labs(Goal - Distance) == 0) {
-                DrawFormatString(255, 50, GetColor(0, 0, 0), "だいせいこう\n\nRキーでリスタート\nEscでメニューへ");
+            // 爆弾までの距離によって結果表示（見出し・差・操作を分ける）
+            long gap = labs((long)(Goal - Distance));
+            char detail[64];
+            snprintf(detail, sizeof(detail), "差  %ld", gap);
+            if (gap == 0) {
+                DrawResultBoard("だいせいこう", GetColor(196, 82, 0), "ぴったり止まった");
             }
-            else if (labs(Goal - Distance) >= 1 && labs(Goal - Distance) < 4) {
-                DrawFormatString(255, 50, GetColor(0, 0, 0), "せいこう\n\nRキーでリスタート\nEscでメニューへ");
+            else if (gap < 4) {
+                DrawResultBoard("せいこう", GetColor(24, 122, 58), detail);
             }
-            else if (labs(Goal - Distance) >= 4 && labs(Goal - Distance) < 10) {
-                DrawFormatString(255, 50, GetColor(0, 0, 0), "おしいけど\n\nRキーでリスタート\nEscでメニューへ");
+            else if (gap < 10) {
+                DrawResultBoard("おしいけど", GetColor(176, 96, 0), detail);
             }
-            else if (labs(Goal - Distance) >= 10) {
-                DrawFormatString(255, 50, GetColor(0, 0, 0), "まだまだ\n\nRキーでリスタート\nEscでメニューへ");
+            else {
+                DrawResultBoard("まだまだ", GetColor(72, 64, 58), detail);
             }
         }
-        if (Out == TRUE) {
-
+        else if (Genkai == TRUE) {
             DrawExtendGraph((int)Bakuhatu_x, vibration_Haikei + Bakuhatu_y, (int)Bakuhatu_x2, vibration_Haikei + Bakuhatu_y2, BakuhatuHandle, TRUE);
             DrawExtendGraph((int)Dokkan_x, vibration_Haikei + Dokkan_y, (int)Dokkan_x2, vibration_Haikei + Dokkan_y2, DokkanHandle, TRUE);
 
-            DrawFormatString(255, 50, GetColor(0, 0, 0), "ばくはつ\n\nRキーでリスタート\nEscでメニューへ");
+            DrawResultBoard("ひっぱりすぎ", GetColor(186, 28, 24), "限界まで引き続けた");
         }
-        if (Out == TRUE && Genkai == TRUE) {
+        else {
             DrawExtendGraph((int)Bakuhatu_x, vibration_Haikei + Bakuhatu_y, (int)Bakuhatu_x2, vibration_Haikei + Bakuhatu_y2, BakuhatuHandle, TRUE);
             DrawExtendGraph((int)Dokkan_x, vibration_Haikei + Dokkan_y, (int)Dokkan_x2, vibration_Haikei + Dokkan_y2, DokkanHandle, TRUE);
 
-            DrawFormatString(255, 50, GetColor(0, 0, 0), "ひっぱりすぎてばくはつ\n\nRキーでリスタート\nEscでメニューへ");
+            DrawResultBoard("ばくはつ", GetColor(186, 28, 24), "勢いが残ったまま当たった");
         }
     }
     if (End == FALSE) {
@@ -678,27 +782,42 @@ void Game_Draw() {
 
         DrawExtendGraph((int)Finger_x, Finger_y, (int)Finger_x2, Finger_y2, FingerHandle, TRUE);
         DrawExtendGraph((int)Bomb_x, Bomb_y, (int)Bomb_x2, Bomb_y2, BombHandle, TRUE);
-        DrawFormatString(0, 0, GetColor(0, 0, 0), "speed:%d", (int)Speed);
-        DrawFormatString(0, 15, GetColor(0, 0, 0), "power:%d", (int)Power);
-        DrawFormatString(240, 50, GetColor(0, 0, 0), "爆弾まで:%d", (int)Goal - (int)Distance);
+
+        char status[64];
+        snprintf(status, sizeof(status), "スピード  %d", (int)Speed);
+        DrawPlateText(8, 8, status, FontHud, GetColor(40, 28, 18));
+        int statusStep = (FontHud == -1) ? 22 : GetFontSizeToHandle(FontHud) + 16;
+        snprintf(status, sizeof(status), "パワー  %d", (int)Power);
+        DrawPlateText(8, 8 + statusStep, status, FontHud, GetColor(40, 28, 18));
+
+        snprintf(status, sizeof(status), "爆弾まで  %d", (int)Goal - (int)Distance);
+        int distW = (FontHud == -1) ? 160 : TextWidth(status, FontHud) + 20;
+        DrawPlateText(640 - distW - 8, 8, status, FontHud, GetColor(40, 28, 18));
 
 
         // 車選択時
         if (Car_Select == TRUE) {
-            DrawFormatString(200, 75, GetColor(0, 0, 0), "SPACEキーを押し込んで引っ張る");
-            DrawFormatString(215, 100, GetColor(0, 0, 0), "←　→キーで車を選択");
+            DrawCenteredPlateText(96, "SPACEキー長押しで引っ張る", FontHud, GetColor(40, 28, 18));
+            int hintStep = (FontHud == -1) ? 28 : GetFontSizeToHandle(FontHud) + 18;
+            DrawCenteredPlateText(96 + hintStep, "←  →  キーで車を選ぶ", FontHud, GetColor(40, 28, 18));
         }
 
         // 限界まで引いた場合
         if (Over > 0) {
-            DrawFormatString(420, 450, GetColor(0, 0, 0), "のこり:%d", 3 - (Over / 60));
+            snprintf(status, sizeof(status), "のこり  %d", 3 - (Over / 60));
+            int remainW = (FontResult == -1) ? 120 : TextWidth(status, FontResult) + 20;
+            DrawPlateText(640 - remainW - 8, 390, status, FontResult, GetColor(186, 28, 24));
         }
 
         // 引っ張り中の文字
         if (Gugugu == TRUE) {
             DrawExtendGraph((int)Gugugu_x, Gugugu_y, (int)Gugugu_x2, Gugugu_y2, GuguguHandle, TRUE);
-            DrawBox(110, 20, 110 + 398, 40, GetColor(0, 0, 0), TRUE);
-            DrawBox(110, 20, 110 + (int)Gage, 40, GetColor(238, 120, 0), TRUE);
+            DrawBox(110, 92, 508, 112, GetColor(72, 48, 24), TRUE);
+            int gageRight = 114 + (int)Gage * 390 / 402;
+            if (gageRight > 504) {
+                gageRight = 504;
+            }
+            DrawBox(114, 96, gageRight, 108, GetColor(238, 120, 0), TRUE);
         }
 
         // ぱっの文字
