@@ -1,21 +1,39 @@
-﻿#include "Game.h"
+﻿#include "pch.h"
+#include "Game.h"
 #include "SceneMgr.h"
-#include "DxLib.h"
-#include <stdlib.h>
 
 #define HAIKEI_SIZE_W 640          // 背景の幅
 
-#define CAR_X_DIFFERENCE 135    // 車のX座標の差
-#define CAR_Y_DIFFERENCE 205    // 車のY座標の差
+#define CAR_DRAW_WIDTH 200         // 車の描画幅（高さは画像比率から算出）
+#define CAR_START_X 20             // 車の初期X（画面左寄り）
+#define CAR_PULL_LIMIT -60         // 引き切った位置（開始から80px）
+#define CAR_Y0 307                 // タイヤが机に着くY
+#define CAR_Y1 325
+#define CAR_Y2 333
 
-#define FINGER_X_DIFFERENCE 270    // 指のX座標の差
-#define FINGER_Y_DIFFERENCE 140    // 指のY座標の差
+#define FINGER_X_DIFFERENCE 270    // 指画像の幅
+#define FINGER_Y_DIFFERENCE 144    // 指画像の高さ
+#define FINGER_X_ON_CAR -164       // 車の左端から指画像までのずれ（左にはみ出す）
+#define FINGER_Y_CAR0 168          // 指先の黒枠が屋根のすぐ上に来るY
+#define FINGER_Y_CAR1 185
+#define FINGER_Y_CAR2 193
+#define FINGER_PULL_LIMIT -224     // 引き切ったときの指X
 
 #define BOMB_X_DIFFERENCE 50    // 爆弾のX座標の差
 #define BOMB_Y_DIFFERENCE 60    // 爆弾のY座標の差
+#define BOMB_START_X 690.0      // 爆弾の初期X（画面外）
+#define BOMB_STOP_GAP 20.0      // 寸止め成功時の車〜爆弾の間隔
+#define BOMB_APPEAR_REMAIN 6.0  // この残距離から画面内へ入り始める（小さいほど接近が速い）
 
 #define BAKUHATU_X_DIFFERENCE 300    // 爆発のX座標の差
 #define BAKUHATU_Y_DIFFERENCE 300    // 爆発のY座標の差
+
+#define GUGUGU_W 420
+#define GUGUGU_H 133
+#define PA_W 260
+#define PA_H 153
+#define DOKKAN_W 480
+#define DOKKAN_H 135
 
 
 // キーの状態
@@ -26,6 +44,7 @@ static int KeyState_Game[256] = { 0 };
 static double Car_x, Car_x2;
 static int  Car_y, Car_y2;
 static int CarHandle_1, CarHandle_2, CarHandle_3;
+static int CarDrawW, CarDrawH; // アスペクト比を保った描画サイズ
 
 
 // 車の種類
@@ -98,6 +117,68 @@ static bool Camera;
 static bool End;
 static bool Out;
 
+// 現在の車種に合わせ、画像の縦横比を保った描画サイズを求める
+static void UpdateCarDrawSize() {
+    int handle = CarHandle_1;
+    if (Car == 1) {
+        handle = CarHandle_2;
+    }
+    else if (Car == 2) {
+        handle = CarHandle_3;
+    }
+
+    int graphW = 0;
+    int graphH = 0;
+    GetGraphSize(handle, &graphW, &graphH);
+
+    CarDrawW = CAR_DRAW_WIDTH;
+    if (graphW > 0 && graphH > 0) {
+        CarDrawH = CarDrawW * graphH / graphW;
+    }
+    else {
+        CarDrawH = CarDrawW / 2;
+    }
+}
+
+// 車の右下座標を、比率を保ったサイズで更新する
+static void UpdateCarRect() {
+    UpdateCarDrawSize();
+    Car_x2 = Car_x + CarDrawW;
+    Car_y2 = Car_y + CarDrawH;
+}
+
+// 残り距離（Goal - Distance）に比例して車〜爆弾の間隔を更新する
+static void UpdateBombPosition() {
+    double bombStopX = Car_x2 + BOMB_STOP_GAP;
+    double remain = Goal - Distance;
+    double farGap = BOMB_START_X - bombStopX;
+    if (farGap < 1.0) {
+        farGap = 1.0;
+    }
+    // 残距離 0 → 寸止め間隔 / 残距離 APPEAR → 画面右端付近
+    double pixelsPerRemain = farGap / BOMB_APPEAR_REMAIN;
+
+    if (Camera == TRUE) {
+        Bomb_x = BOMB_START_X;
+    }
+    else if (remain > BOMB_APPEAR_REMAIN) {
+        // まだ遠い：画面外。不足が大きいほどさらに右
+        Bomb_x = BOMB_START_X + (remain - BOMB_APPEAR_REMAIN) * pixelsPerRemain;
+    }
+    else if (remain >= 0) {
+        // 残り距離の差がそのまま見た目の差になる
+        Bomb_x = bombStopX + remain * pixelsPerRemain;
+    }
+    else {
+        // わずかに行き過ぎて停止した場合用（爆発せず寸止め結果へ）
+        Bomb_x = bombStopX + remain * pixelsPerRemain;
+        if (Bomb_x < Car_x2 + 2.0) {
+            Bomb_x = Car_x2 + 2.0;
+        }
+    }
+    Bomb_x2 = Bomb_x + BOMB_X_DIFFERENCE;
+}
+
 // 初期化
 void Game_Initialize() {
 
@@ -130,30 +211,27 @@ void Game_Initialize() {
     Goal = 100 + (GetRand(10) * 10);
 
 
-    // 車の初期座標
-    Car_x = 85;
-    Car_y = 307;
-    Car_x2 = Car_x + CAR_X_DIFFERENCE;
-    Car_y2 = Car_y + CAR_Y_DIFFERENCE;
-
-
-    // 指の初期座標
-    Finger_x = -115;
+    // 車と指の初期座標（タイヤは机、指先は屋根）
+    Car_x = CAR_START_X;
+    Finger_x = CAR_START_X + FINGER_X_ON_CAR;
     if (Car == 0) {
-        Finger_y = 227;
+        Car_y = CAR_Y0;
+        Finger_y = FINGER_Y_CAR0;
     }
     else if (Car == 1) {
-        Finger_y = 243;
+        Car_y = CAR_Y1;
+        Finger_y = FINGER_Y_CAR1;
     }
     else {
-        Finger_y = 229;
+        Car_y = CAR_Y2;
+        Finger_y = FINGER_Y_CAR2;
     }
     Finger_x2 = Finger_x + FINGER_X_DIFFERENCE;
     Finger_y2 = Finger_y + FINGER_Y_DIFFERENCE;
 
 
     // 爆弾の初期座標
-    Bomb_x = 690;
+    Bomb_x = BOMB_START_X;
     Bomb_y = 385;
     Bomb_x2 = Bomb_x + BOMB_X_DIFFERENCE;
     Bomb_y2 = Bomb_y + BOMB_Y_DIFFERENCE;
@@ -169,22 +247,22 @@ void Game_Initialize() {
     // ぐぐぐの文字の初期座標
     Gugugu_x = 100;
     Gugugu_y = 180;
-    Gugugu_x2 = Gugugu_x + 280;
-    Gugugu_y2 = Gugugu_y + 120;
+    Gugugu_x2 = Gugugu_x + GUGUGU_W;
+    Gugugu_y2 = Gugugu_y + GUGUGU_H;
 
 
     // ぱっの文字の座標
     Pa_x = 100;
     Pa_y = 180;
-    Pa_x2 = Pa_x + 250;
-    Pa_y2 = Pa_y + 130;
+    Pa_x2 = Pa_x + PA_W;
+    Pa_y2 = Pa_y + PA_H;
 
 
     // どっかーんの文字の座標
     Dokkan_x = 120;
     Dokkan_y = 80;
-    Dokkan_x2 = Dokkan_x + 300;
-    Dokkan_y2 = Dokkan_y + 200;
+    Dokkan_x2 = Dokkan_x + DOKKAN_W;
+    Dokkan_y2 = Dokkan_y + DOKKAN_H;
 
 
     // 振動
@@ -192,20 +270,21 @@ void Game_Initialize() {
 
 
     // 画像のロード
-    CarHandle_1 = LoadGraph("images/seisaku/car.png");
-    CarHandle_2 = LoadGraph("images/seisaku/car2.png");
-    CarHandle_3 = LoadGraph("images/seisaku/car3.png");
-    FingerHandle = LoadGraph("images/seisaku/finger.png");
+    CarHandle_1 = LoadGraph(IMAGE_DIR "car.png");
+    CarHandle_2 = LoadGraph(IMAGE_DIR "car2.png");
+    CarHandle_3 = LoadGraph(IMAGE_DIR "car3.png");
+    FingerHandle = LoadGraph(IMAGE_DIR "finger.png");
 
-    HaikeiHandle = LoadGraph("images/seisaku/haikei.png");
-    tukueHandle = LoadGraph("images/seisaku/tukue.png");
-    BombHandle = LoadGraph("images/seisaku/bomb.png");
-    BakuhatuHandle = LoadGraph("images/seisaku/bakuhatu.png");
+    HaikeiHandle = LoadGraph(IMAGE_DIR "haikei.png");
+    tukueHandle = LoadGraph(IMAGE_DIR "tukue.png");
+    BombHandle = LoadGraph(IMAGE_DIR "bomb.png");
+    BakuhatuHandle = LoadGraph(IMAGE_DIR "bakuhatu.png");
 
-    GuguguHandle = LoadGraph("images/seisaku/gugugu.png");
-    PaHandle = LoadGraph("images/seisaku/pa.png");
-    DokkanHandle = LoadGraph("images/seisaku/dokkan.png");
+    GuguguHandle = LoadGraph(IMAGE_DIR "gugugu.png");
+    PaHandle = LoadGraph(IMAGE_DIR "pa.png");
+    DokkanHandle = LoadGraph(IMAGE_DIR "dokkan.png");
 
+    UpdateCarRect();
 }
 
 // 終了処理
@@ -237,8 +316,7 @@ void Game_Update() {
         Game_Initialize();                // ゲームを初めからやり直す
     }
 
-    Car_x2 = Car_x + CAR_X_DIFFERENCE;
-    Car_y2 = Car_y + CAR_Y_DIFFERENCE;
+    UpdateCarRect();
 
     Finger_x2 = Finger_x + FINGER_X_DIFFERENCE;
     Finger_y2 = Finger_y + FINGER_Y_DIFFERENCE;
@@ -271,18 +349,18 @@ void Game_Update() {
 
         if (Car_num == 0) {
             Car = 0;
-            Car_y = 307;
-            Finger_y = 227;           // 車のサイズによって指の座標が変わる
+            Car_y = CAR_Y0;
+            Finger_y = FINGER_Y_CAR0;  // 車のサイズによって指の座標が変わる
         }
         if (Car_num == 1) {
             Car = 1;
-            Car_y = 307;
-            Finger_y = 243;
+            Car_y = CAR_Y1;
+            Finger_y = FINGER_Y_CAR1;
         }
         if (Car_num == 2) {
             Car = 2;
-            Car_y = 307 + 10;
-            Finger_y = 229;
+            Car_y = CAR_Y2;
+            Finger_y = FINGER_Y_CAR2;
         }
     }
 
@@ -303,20 +381,20 @@ void Game_Update() {
         }
 
         // 車を引っ張る動き
-        if (Car_x >= 5) {
+        if (Car_x >= CAR_PULL_LIMIT) {
             Car_x -= 0.4;
             Finger_x -= 0.4;
             if (Car == 0) {
-                Car_y = 307 + 3;
-                Finger_y = 227 + 4;
+                Car_y = CAR_Y0 + 3;
+                Finger_y = FINGER_Y_CAR0 + 4;
             }
             if (Car == 1) {
-                Car_y = 307 + 3;
-                Finger_y = 243 + 4;
+                Car_y = CAR_Y1 + 3;
+                Finger_y = FINGER_Y_CAR1 + 4;
             }
             if (Car == 2) {
-                Car_y = 307 + 10 + 3;
-                Finger_y = 229 + 4;
+                Car_y = CAR_Y2 + 3;
+                Finger_y = FINGER_Y_CAR2 + 4;
             }
         }
         else {
@@ -336,16 +414,16 @@ void Game_Update() {
 
                 // 車の種類ごとに座標を変える
                 if (Car == 0) {
-                    Car_y = 307 + 4;
-                    Finger_y = 227 + 2;
+                    Car_y = CAR_Y0 + 4;
+                    Finger_y = FINGER_Y_CAR0 + 2;
                 }
                 if (Car == 1) {
-                    Car_y = 307 + 4;
-                    Finger_y = 243 + 2;
+                    Car_y = CAR_Y1 + 4;
+                    Finger_y = FINGER_Y_CAR1 + 2;
                 }
                 if (Car == 2) {
-                    Car_y = 307 + 10 + 4;
-                    Finger_y = 229 + 2;
+                    Car_y = CAR_Y2 + 4;
+                    Finger_y = FINGER_Y_CAR2 + 2;
                 }
 
             }
@@ -354,16 +432,16 @@ void Game_Update() {
                 Gage = 398 + 4;
 
                 if (Car == 0) {
-                    Car_y = 307 - 4;
-                    Finger_y = 227;
+                    Car_y = CAR_Y0 - 4;
+                    Finger_y = FINGER_Y_CAR0;
                 }
                 if (Car == 1) {
-                    Car_y = 307 - 4;
-                    Finger_y = 243;
+                    Car_y = CAR_Y1 - 4;
+                    Finger_y = FINGER_Y_CAR1;
                 }
                 if (Car == 2) {
-                    Car_y = 307 - 4 + 10;
-                    Finger_y = 229;
+                    Car_y = CAR_Y2 - 4;
+                    Finger_y = FINGER_Y_CAR2;
                 }
 
 
@@ -377,20 +455,21 @@ void Game_Update() {
         }
 
         // 限界まで引き続けたとき座標を相殺する
-        if (Car_x <= 5) {
+        if (Car_x <= CAR_PULL_LIMIT) {
             Pull = FALSE;
             Car_x += 0.4;
 
             Over++;
         }
-        if (Finger_x <= -195) {
+        if (Finger_x <= FINGER_PULL_LIMIT) {
             Finger_x += 0.4;
         }
 
         if (Over / 60 == 3) {
 
-            Bakuhatu_x = 120 - 200;
-            Dokkan_x = 120 - 200;
+            Bakuhatu_x = Car_x - 85;
+            Dokkan_x = Car_x - 85;
+            Dokkan_x2 = Dokkan_x + DOKKAN_W;
 
             Genkai = TRUE;
             End = TRUE;
@@ -413,38 +492,45 @@ void Game_Update() {
             End = TRUE;
         }
 
-        // 必殺技で爆弾までの距離を調整
-        if (Bomb_x - Car_x2 < 0 || Goal - Distance < -1) {
-            End = TRUE;
-            Out = TRUE;
+        // 残り距離に応じて爆弾を近づける（パワー不足・ぴったりで間隔が変わる）
+        if (Out == FALSE && Start == FALSE) {
+            UpdateBombPosition();
         }
 
-        // 爆弾を近づける
-        if (((Goal - 9 <= Distance) && Speed > 0) && Out == FALSE) {
-            Bomb_x -= (int)Speed;
+        // オーバーパワー：同じ進路で勢いは残ったまま目標を超えた＝爆弾へ突入して即衝突
+        // （減速しきってから隙間を閉じるのではなく、スピードが残っている時点で爆発）
+        if (Out == FALSE && Distance > Goal && Speed > 0) {
+            Bomb_x = Car_x2;
+            Bomb_x2 = Bomb_x + BOMB_X_DIFFERENCE;
+            Bakuhatu_x = Car_x2 - BAKUHATU_X_DIFFERENCE * 0.5;
+            Bakuhatu_x2 = Bakuhatu_x + BAKUHATU_X_DIFFERENCE;
+            Dokkan_x = Car_x2 - DOKKAN_W / 2;
+            Dokkan_x2 = Dokkan_x + DOKKAN_W;
+            End = TRUE;
+            Out = TRUE;
         }
 
         // 走っている感じを出すための振動処理
         if (vibration_Car % 2 == 1) {
             if (Car == 0) {
-                Car_y = 306;
+                Car_y = CAR_Y0 - 1;
             }
             if (Car == 1) {
-                Car_y = 306;
+                Car_y = CAR_Y1 - 1;
             }
             if (Car == 2) {
-                Car_y = 306 + 10;
+                Car_y = CAR_Y2 - 1;
             }
         }
         else {
             if (Car == 0) {
-                Car_y = 308;
+                Car_y = CAR_Y0 + 1;
             }
             if (Car == 1) {
-                Car_y = 308;
+                Car_y = CAR_Y1 + 1;
             }
             if (Car == 2) {
-                Car_y = 308 + 10;
+                Car_y = CAR_Y2 + 1;
             }
         }
         if (Haikei <= -639) {
@@ -463,15 +549,14 @@ void Game_Update() {
 
             // 車を前に出し、加速する
             if (Car == 0) {
-                Car_y = 304;
+                Car_y = CAR_Y0 - 3;
             }
             if (Car == 1) {
-                Car_y = 304;
+                Car_y = CAR_Y1 - 3;
             }
             if (Car == 2) {
-                Car_y = 304 + 10;
+                Car_y = CAR_Y2 - 3;
             }
-            Finger_y = 225;
             Finger_x -= 8;
 
             // 徐々にカメラを追いつくように

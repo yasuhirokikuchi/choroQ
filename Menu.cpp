@@ -1,6 +1,6 @@
-﻿#include "Menu.h"
+#include "pch.h"
+#include "Menu.h"
 #include "SceneMgr.h"
-#include "DxLib.h"
 
 static int KeyState_Menu[256] = { 0 };
 
@@ -12,7 +12,7 @@ void Menu_Initialize() {
         KeyState_Menu[i] = 0;
     }
 
-    MenuHandle = LoadGraph("images/seisaku/sundome.png");    // 画像のロード
+    MenuHandle = LoadGraph(IMAGE_DIR "sundome.png");    // 画像のロード
 }
 
 // 終了処理
